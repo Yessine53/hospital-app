@@ -1,0 +1,83 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: hospital-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: hospital_secure_2024
+      MONGO_INITDB_DATABASE: hospital_db
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - hospital-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: hospital-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: development
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:hospital_secure_2024@mongodb:27017/hospital_db?authSource=admin
+      JWT_SECRET: hospital_jwt_secret_change_in_production
+      JWT_EXPIRES_IN: 7d
+      ML_SERVICE_URL: http://ml-service:8000
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_USER: your-email@gmail.com
+      SMTP_PASS: your-app-password
+      TWILIO_ACCOUNT_SID: your-twilio-sid
+      TWILIO_AUTH_TOKEN: your-twilio-token
+      TWILIO_PHONE_NUMBER: +1234567890
+      FRONTEND_URL: http://localhost:3000
+    depends_on:
+      - mongodb
+      - ml-service
+    volumes:
+      - ./data:/data
+    networks:
+      - hospital-network
+
+  ml-service:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: hospital-ml
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      MONGODB_URI: mongodb://admin:hospital_secure_2024@mongodb:27017/hospital_db?authSource=admin
+    depends_on:
+      - mongodb
+    networks:
+      - hospital-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: hospital-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:5000/api
+    depends_on:
+      - backend
+    networks:
+      - hospital-network
+
+volumes:
+  mongodb_data:
+
+networks:
+  hospital-network:
+    driver: bridge
