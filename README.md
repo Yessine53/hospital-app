@@ -172,4 +172,4 @@ hospital-app/
 
 ## License
 
-This project was developed as part of a thesis at Harvard University.
+This project was developed as part of a thesis at University of Wolverhampton.
