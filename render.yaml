@@ -1,0 +1,39 @@
+# render.yaml — place in hospital-app root for Render Blueprint deployment
+services:
+  # Backend API
+  - type: web
+    name: medbook-api
+    runtime: node
+    region: frankfurt
+    plan: free
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: node dist/server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false  # Set manually in Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ML_SERVICE_URL
+        sync: false  # Set to your ML service URL after deploying it
+      - key: FRONTEND_URL
+        sync: false  # Set to your Vercel frontend URL
+
+  # ML Service
+  - type: web
+    name: medbook-ml
+    runtime: python
+    region: frankfurt
+    plan: free
+    rootDir: ml-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGODB_URI
+        sync: false  # Same Atlas URI as backend
+      - key: PORT
+        value: 8000
