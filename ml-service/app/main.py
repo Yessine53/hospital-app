@@ -62,7 +62,12 @@ class TrainResponse(BaseModel):
 
 def get_db():
     client = MongoClient(MONGODB_URI)
-    return client.get_default_database()
+    # get_default_database() requires db name in the URI
+    # Fall back to explicit name if not present
+    try:
+        return client.get_default_database()
+    except Exception:
+        return client["hospital_db"]
 
 
 def extract_features(patient_data: dict, appointment_data: dict) -> dict:
