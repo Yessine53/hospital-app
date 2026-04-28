@@ -248,41 +248,75 @@ def calculate_heuristic_risk(features: dict) -> float:
 
 
 @app.post("/train", response_model=TrainResponse)
-async def train_model():
-    """Train the no-show prediction model using historical data."""
+async def train_model(sample_size: int = 30000):
+    """
+    Train the no-show prediction model using historical data.
+
+    sample_size: max number of appointments to train on (default 30000).
+    On Render free tier (512 MB RAM) keep this modest. Set higher only on a
+    paid instance.
+    """
     global model, model_metadata
 
     try:
         db = get_db()
 
-        # Fetch historical appointments with outcomes
-        appointments = list(db.appointments.find({
+        # Count first so we can log progress meaningfully
+        eligible_count = db.appointments.count_documents({
             "status": {"$in": ["completed", "no_show"]},
-        }))
+        })
         print(
-            f"[train] Found {len(appointments)} eligible appointments in db '{db.name}' "
-            f"from collection 'appointments'. Total docs in collection: "
-            f"{db.appointments.estimated_document_count()}",
+            f"[train] Eligible appointments in db '{db.name}': {eligible_count}. "
+            f"Sample size cap: {sample_size}",
             flush=True,
         )
 
-        if len(appointments) < 50:
+        if eligible_count < 50:
             raise HTTPException(
                 status_code=400,
-                detail=f"Not enough training data. Found {len(appointments)} appointments, need at least 50.",
+                detail=f"Not enough training data. Found {eligible_count} appointments, need at least 50.",
             )
 
-        # Build training dataset
+        # 1) Stream appointments (only the fields we actually need).
+        #    Cap at sample_size to fit free-tier memory and time budget.
+        projection = {
+            "patientId": 1, "status": 1, "date": 1, "startTime": 1, "type": 1,
+        }
+        cursor = (
+            db.appointments
+            .find({"status": {"$in": ["completed", "no_show"]}}, projection)
+            .limit(sample_size)
+        )
+        appointments = list(cursor)
+        print(f"[train] Loaded {len(appointments)} appointments into memory", flush=True)
+
+        # 2) Bulk-fetch all unique patients in ONE round trip instead of N.
+        unique_patient_ids = list({a["patientId"] for a in appointments if a.get("patientId")})
+        print(f"[train] Fetching {len(unique_patient_ids)} unique patients in bulk...", flush=True)
+
+        patient_projection = {
+            "totalAppointments": 1, "noShowCount": 1, "attendedAppointments": 1,
+            "cancelledAppointments": 1, "dateOfBirth": 1, "gender": 1,
+        }
+        patients_by_id = {
+            p["_id"]: p
+            for p in db.patients.find(
+                {"_id": {"$in": unique_patient_ids}}, patient_projection
+            )
+        }
+        print(f"[train] Patient map built: {len(patients_by_id)} patients", flush=True)
+
+        # 3) Build feature rows in memory (no more DB calls inside the loop)
         rows = []
         for appt in appointments:
-            patient = db.patients.find_one({"_id": appt.get("patientId")})
+            patient = patients_by_id.get(appt.get("patientId"))
             if not patient:
                 continue
-
             features = extract_features(patient, appt)
             features["no_show"] = 1 if appt["status"] == "no_show" else 0
             rows.append(features)
 
+        print(f"[train] Built feature matrix: {len(rows)} rows", flush=True)
         df = pd.DataFrame(rows)
         if len(df) < 50:
             raise HTTPException(status_code=400, detail="Not enough valid training samples")
@@ -291,6 +325,7 @@ async def train_model():
         y = df["no_show"]
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        print(f"[train] Split done. Train={len(X_train)}, Test={len(X_test)}. Fitting model...", flush=True)
 
         # Train Gradient Boosting model
         model = GradientBoostingClassifier(
@@ -302,6 +337,7 @@ async def train_model():
             random_state=42,
         )
         model.fit(X_train, y_train)
+        print("[train] Model fit complete", flush=True)
 
         # Evaluate
         y_pred = model.predict(X_test)
