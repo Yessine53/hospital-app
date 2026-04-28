@@ -33,7 +33,9 @@ model = None
 model_metadata = {}
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:hospital_secure_2024@localhost:27017/hospital_db?authSource=admin")
-MODEL_PATH = "/app/models/noshow_model.pkl"
+# Default to a path relative to CWD so it works on Render's native runtime
+# (where /app is not writable). Override with MODEL_PATH env var if needed.
+MODEL_PATH = os.getenv("MODEL_PATH", "models/noshow_model.pkl")
 
 # Diagnostic at startup: log which host (no password) and whether env var was used
 _uri_host = MONGODB_URI.split('@')[-1].split('/')[0].split('?')[0] if '@' in MONGODB_URI else MONGODB_URI
@@ -393,9 +395,20 @@ async def train_model(sample_size: int = 30000):
         importances = dict(zip(X.columns, model.feature_importances_))
         importances = {k: round(float(v), 4) for k, v in sorted(importances.items(), key=lambda x: -x[1])}
 
-        # Save model
-        os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-        joblib.dump(model, MODEL_PATH)
+        # Save model (don't fail the whole train run if disk write fails —
+        # the in-memory model is still usable for predictions until restart)
+        try:
+            model_dir = os.path.dirname(MODEL_PATH)
+            if model_dir:
+                os.makedirs(model_dir, exist_ok=True)
+            joblib.dump(model, MODEL_PATH)
+            print(f"[train] Model saved to {MODEL_PATH}", flush=True)
+        except Exception as save_err:
+            print(
+                f"[train] WARNING: failed to persist model to {MODEL_PATH}: {save_err}. "
+                f"Model is still active in memory until next restart.",
+                flush=True,
+            )
 
         model_metadata = {
             "trained_at": datetime.now().isoformat(),
