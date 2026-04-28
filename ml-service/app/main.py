@@ -60,15 +60,11 @@ class TrainResponse(BaseModel):
     feature_importances: dict
 
 
+DB_NAME = os.getenv("MONGODB_DB", "hospital_db")
+
 def get_db():
     client = MongoClient(MONGODB_URI)
-    # get_default_database() requires db name in the URI
-    # Fall back to explicit name if not present
-    try:
-        return client.get_default_database()
-    except Exception:
-        return client["hospital_db"]
-
+    return client[DB_NAME]
 
 def extract_features(patient_data: dict, appointment_data: dict) -> dict:
     """Extract features for prediction from patient and appointment data."""
@@ -247,6 +243,7 @@ async def train_model():
         appointments = list(db.appointments.find({
             "status": {"$in": ["completed", "no_show"]},
         }))
+        print(f"[train] Found {len(appointments)} eligible appointments in db '{db.name}' from collection 'appointments'. Total docs in collection: {db.appointments.estimated_document_count()}")
 
         if len(appointments) < 50:
             raise HTTPException(
