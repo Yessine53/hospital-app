@@ -277,18 +277,49 @@ async def train_model(sample_size: int = 30000):
                 detail=f"Not enough training data. Found {eligible_count} appointments, need at least 50.",
             )
 
-        # 1) Stream appointments (only the fields we actually need).
-        #    Cap at sample_size to fit free-tier memory and time budget.
+        # 1) Stratified sampling — fetch ALL no_show rows (minority class)
+        #    plus a random sample of completed rows (majority class).
+        #    This guarantees both classes are represented in training.
         projection = {
             "patientId": 1, "status": 1, "date": 1, "startTime": 1, "type": 1,
         }
-        cursor = (
-            db.appointments
-            .find({"status": {"$in": ["completed", "no_show"]}}, projection)
-            .limit(sample_size)
+
+        # Get all no_show rows (rare class — typically a few thousand)
+        no_show_appts = list(
+            db.appointments.find({"status": "no_show"}, projection)
         )
-        appointments = list(cursor)
-        print(f"[train] Loaded {len(appointments)} appointments into memory", flush=True)
+        print(f"[train] Loaded {len(no_show_appts)} no_show appointments", flush=True)
+
+        # Cap how many "completed" rows we use, leaving room for the no_shows
+        # within the overall sample_size budget.
+        completed_budget = max(50, sample_size - len(no_show_appts))
+
+        # Random sample of completed rows via $sample (server-side, memory-friendly)
+        completed_appts = list(
+            db.appointments.aggregate([
+                {"$match": {"status": "completed"}},
+                {"$sample": {"size": completed_budget}},
+                {"$project": projection},
+            ])
+        )
+        print(f"[train] Loaded {len(completed_appts)} completed appointments (sampled)", flush=True)
+
+        appointments = no_show_appts + completed_appts
+        print(
+            f"[train] Total training pool: {len(appointments)} "
+            f"(no_show={len(no_show_appts)}, completed={len(completed_appts)})",
+            flush=True,
+        )
+
+        # Sanity check — both classes must be present
+        if len(no_show_appts) < 10 or len(completed_appts) < 10:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Not enough class diversity. no_show={len(no_show_appts)}, "
+                    f"completed={len(completed_appts)}. Need at least 10 of each."
+                ),
+            )
 
         # 2) Bulk-fetch all unique patients in ONE round trip instead of N.
         unique_patient_ids = list({a["patientId"] for a in appointments if a.get("patientId")})
@@ -320,6 +351,15 @@ async def train_model(sample_size: int = 30000):
         df = pd.DataFrame(rows)
         if len(df) < 50:
             raise HTTPException(status_code=400, detail="Not enough valid training samples")
+
+        # Log class balance — critical for imbalanced classification debugging
+        class_counts = df["no_show"].value_counts().to_dict()
+        print(f"[train] Class distribution: {class_counts}", flush=True)
+        if len(class_counts) < 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Training data only contains one class: {class_counts}. Need both no_show=0 and no_show=1.",
+            )
 
         X = df.drop("no_show", axis=1)
         y = df["no_show"]
