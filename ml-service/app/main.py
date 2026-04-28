@@ -35,6 +35,11 @@ model_metadata = {}
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:hospital_secure_2024@localhost:27017/hospital_db?authSource=admin")
 MODEL_PATH = "/app/models/noshow_model.pkl"
 
+# Diagnostic at startup: log which host (no password) and whether env var was used
+_uri_host = MONGODB_URI.split('@')[-1].split('/')[0].split('?')[0] if '@' in MONGODB_URI else MONGODB_URI
+print(f"[startup] MONGODB_URI host: {_uri_host}", flush=True)
+print(f"[startup] MONGODB_URI is from env: {os.getenv('MONGODB_URI') is not None}", flush=True)
+
 
 class PredictionRequest(BaseModel):
     appointmentId: str
@@ -60,11 +65,22 @@ class TrainResponse(BaseModel):
     feature_importances: dict
 
 
-DB_NAME = os.getenv("MONGODB_DB", "hospital_db")
-
 def get_db():
+    """
+    Resolve the database in this order:
+      1. Database name in the MONGODB_URI path (preferred — single source of truth)
+      2. MONGODB_DB env var override
+      3. Hardcoded fallback 'medbook'
+    """
     client = MongoClient(MONGODB_URI)
-    return client[DB_NAME]
+    try:
+        db = client.get_default_database()
+        if db is not None:
+            return db
+    except Exception:
+        pass
+    return client[os.getenv("MONGODB_DB", "medbook")]
+
 
 def extract_features(patient_data: dict, appointment_data: dict) -> dict:
     """Extract features for prediction from patient and appointment data."""
@@ -243,7 +259,12 @@ async def train_model():
         appointments = list(db.appointments.find({
             "status": {"$in": ["completed", "no_show"]},
         }))
-        print(f"[train] Found {len(appointments)} eligible appointments in db '{db.name}' from collection 'appointments'. Total docs in collection: {db.appointments.estimated_document_count()}")
+        print(
+            f"[train] Found {len(appointments)} eligible appointments in db '{db.name}' "
+            f"from collection 'appointments'. Total docs in collection: "
+            f"{db.appointments.estimated_document_count()}",
+            flush=True,
+        )
 
         if len(appointments) < 50:
             raise HTTPException(
