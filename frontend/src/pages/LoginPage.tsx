@@ -102,14 +102,6 @@ const LoginPage: React.FC = () => {
             </Link>
           </p>
         </div>
-
-        {/* Demo credentials hint */}
-        <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700">
-          <p className="font-medium mb-1">Demo accounts:</p>
-          <p>Admin: admin@hospital.com / Admin123!</p>
-          <p>Doctor: dr.smith@hospital.com / Doctor123!</p>
-          <p>Patient: john.doe@email.com / Patient123!</p>
-        </div>
       </div>
     </div>
   );
