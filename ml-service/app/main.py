@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+import io
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier
@@ -9,12 +10,13 @@ from sklearn.metrics import classification_report, roc_auc_score
 import joblib
 import os
 from datetime import datetime
-from pymongo import MongoClient
+from pymongo import MongoClient, DESCENDING
+from gridfs import GridFS
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
 
 
-app = FastAPI(title="Hospital No-Show Prediction Service", version="1.0.0")
+app = FastAPI(title="Hospital No-Show Prediction Service", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,10 +33,10 @@ app.add_middleware(
 # Global model reference
 model = None
 model_metadata = {}
+model_feature_importances = {}  # cached so /model/info can return them after restart
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:hospital_secure_2024@localhost:27017/hospital_db?authSource=admin")
-# Default to a path relative to CWD so it works on Render's native runtime
-# (where /app is not writable). Override with MODEL_PATH env var if needed.
+# Kept for backwards compat / local dev only — production persistence is in MongoDB.
 MODEL_PATH = os.getenv("MODEL_PATH", "models/noshow_model.pkl")
 
 # Diagnostic at startup: log which host (no password) and whether env var was used
@@ -82,6 +84,88 @@ def get_db():
     except Exception:
         pass
     return client[os.getenv("MONGODB_DB", "medbook")]
+
+
+# ---------------------------------------------------------------------------
+# Model persistence helpers — MongoDB / GridFS
+# ---------------------------------------------------------------------------
+# Why MongoDB instead of the local filesystem?
+# Render's free tier has an EPHEMERAL filesystem and spins down after ~15 min
+# of inactivity. Anything we write to disk (including models/noshow_model.pkl)
+# is gone the next time the container starts. Atlas is durable, already
+# connected, and free — so we use GridFS for the binary and a regular
+# collection for the metadata. Every train run is kept; the latest one wins
+# on load.
+# ---------------------------------------------------------------------------
+
+def save_model_to_db(db, trained_model, metadata: dict, feature_importances: dict) -> str:
+    """
+    Serialise `trained_model` to bytes, store in GridFS, and write a row to
+    `model_metadata` linking to it. Returns the inserted metadata document _id.
+    """
+    fs = GridFS(db, collection="model_files")
+
+    buf = io.BytesIO()
+    joblib.dump(trained_model, buf)
+    buf.seek(0)
+    file_id = fs.put(
+        buf.getvalue(),
+        filename=f"noshow_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl",
+        content_type="application/octet-stream",
+    )
+
+    doc = {
+        **metadata,
+        "feature_importances": feature_importances,
+        "model_file_id": file_id,
+        "created_at": datetime.now(),
+    }
+    result = db.model_metadata.insert_one(doc)
+    print(f"[persist] Saved model to GridFS (file_id={file_id}) and metadata _id={result.inserted_id}", flush=True)
+    return str(result.inserted_id)
+
+
+def load_latest_model_from_db():
+    """
+    Pull the most recent training run from MongoDB and load the model into
+    memory. Populates the module-level `model`, `model_metadata`, and
+    `model_feature_importances` globals. Safe to call multiple times.
+    Returns True on success, False if no model is stored yet.
+    """
+    global model, model_metadata, model_feature_importances
+    try:
+        db = get_db()
+        latest = db.model_metadata.find_one(
+            {"model_file_id": {"$exists": True}},
+            sort=[("created_at", DESCENDING)],
+        )
+        if not latest:
+            print("[persist] No saved model found in MongoDB.", flush=True)
+            return False
+
+        fs = GridFS(db, collection="model_files")
+        grid_out = fs.get(latest["model_file_id"])
+        model = joblib.load(io.BytesIO(grid_out.read()))
+
+        model_metadata = {
+            "trained_at": latest.get("trained_at"),
+            "model_type": latest.get("model_type", "GradientBoostingClassifier"),
+            "training_samples": latest.get("training_samples"),
+            "test_samples": latest.get("test_samples"),
+            "accuracy": latest.get("accuracy"),
+            "auc_score": latest.get("auc_score"),
+            "loaded_at": datetime.now().isoformat(),
+        }
+        model_feature_importances = latest.get("feature_importances", {})
+        print(
+            f"[persist] Loaded model from MongoDB. trained_at={model_metadata.get('trained_at')}, "
+            f"accuracy={model_metadata.get('accuracy')}",
+            flush=True,
+        )
+        return True
+    except Exception as e:
+        print(f"[persist] Failed to load model from MongoDB: {e}", flush=True)
+        return False
 
 
 def extract_features(patient_data: dict, appointment_data: dict) -> dict:
@@ -142,16 +226,25 @@ def extract_features(patient_data: dict, appointment_data: dict) -> dict:
 
 @app.on_event("startup")
 async def load_model():
-    global model, model_metadata
+    """
+    On startup: try MongoDB first (durable across restarts), fall back to a
+    local .pkl file only as a courtesy for local-dev workflows.
+    """
+    if load_latest_model_from_db():
+        return
+
+    # Local-dev fallback only — production should never hit this branch.
     if os.path.exists(MODEL_PATH):
+        global model, model_metadata
         model = joblib.load(MODEL_PATH)
         model_metadata = {
             "loaded_at": datetime.now().isoformat(),
             "model_type": "GradientBoostingClassifier",
+            "source": "local_file",
         }
-        print(f"Model loaded from {MODEL_PATH}")
+        print(f"[startup] Loaded model from local file {MODEL_PATH} (dev fallback)", flush=True)
     else:
-        print("No pre-trained model found. Use /train endpoint to train a new model.")
+        print("[startup] No pre-trained model found. Use /train endpoint to train a new model.", flush=True)
 
 
 @app.get("/health")
@@ -258,7 +351,7 @@ async def train_model(sample_size: int = 30000):
     On Render free tier (512 MB RAM) keep this modest. Set higher only on a
     paid instance.
     """
-    global model, model_metadata
+    global model, model_metadata, model_feature_importances
 
     try:
         db = get_db()
@@ -395,21 +488,6 @@ async def train_model(sample_size: int = 30000):
         importances = dict(zip(X.columns, model.feature_importances_))
         importances = {k: round(float(v), 4) for k, v in sorted(importances.items(), key=lambda x: -x[1])}
 
-        # Save model (don't fail the whole train run if disk write fails —
-        # the in-memory model is still usable for predictions until restart)
-        try:
-            model_dir = os.path.dirname(MODEL_PATH)
-            if model_dir:
-                os.makedirs(model_dir, exist_ok=True)
-            joblib.dump(model, MODEL_PATH)
-            print(f"[train] Model saved to {MODEL_PATH}", flush=True)
-        except Exception as save_err:
-            print(
-                f"[train] WARNING: failed to persist model to {MODEL_PATH}: {save_err}. "
-                f"Model is still active in memory until next restart.",
-                flush=True,
-            )
-
         model_metadata = {
             "trained_at": datetime.now().isoformat(),
             "model_type": "GradientBoostingClassifier",
@@ -418,13 +496,28 @@ async def train_model(sample_size: int = 30000):
             "accuracy": round(accuracy, 4),
             "auc_score": round(auc, 4),
         }
+        model_feature_importances = importances
 
-        # Store metadata in DB
-        db.model_metadata.insert_one({
-            **model_metadata,
-            "feature_importances": importances,
-            "created_at": datetime.now(),
-        })
+        # Persist to MongoDB. Every successful train is kept (history),
+        # the latest one is what /model/info and startup load.
+        try:
+            save_model_to_db(db, model, model_metadata, importances)
+        except Exception as save_err:
+            print(
+                f"[train] WARNING: failed to persist model to MongoDB: {save_err}. "
+                f"Model is still active in memory until next restart.",
+                flush=True,
+            )
+
+        # Best-effort local copy too — useful for local dev only.
+        try:
+            model_dir = os.path.dirname(MODEL_PATH)
+            if model_dir:
+                os.makedirs(model_dir, exist_ok=True)
+            joblib.dump(model, MODEL_PATH)
+        except Exception:
+            # Read-only filesystem on Render is expected; ignore.
+            pass
 
         return TrainResponse(
             message="Model trained successfully",
@@ -442,10 +535,14 @@ async def train_model(sample_size: int = 30000):
 
 @app.get("/model/info")
 async def model_info():
-    """Get current model information."""
+    """
+    Get current (latest) model information. Includes feature importances so
+    the UI can render them on first load — not just immediately after training.
+    """
     return {
         "model_loaded": model is not None,
         "metadata": model_metadata,
+        "feature_importances": model_feature_importances,
         "features_used": [
             "lead_time_days", "hour_of_day", "day_of_week", "is_morning",
             "is_monday", "is_friday", "total_appointments", "no_show_count",
@@ -453,3 +550,28 @@ async def model_info():
             "gender", "appointment_type", "is_new_patient",
         ],
     }
+
+
+@app.get("/model/history")
+async def model_history(limit: int = 10):
+    """
+    Return the most recent training runs (newest first), excluding the heavy
+    GridFS file id. Useful for the UI to show 'last N trains' if desired.
+    """
+    try:
+        db = get_db()
+        cursor = (
+            db.model_metadata
+            .find({}, {"model_file_id": 0})
+            .sort("created_at", DESCENDING)
+            .limit(max(1, min(limit, 50)))
+        )
+        runs = []
+        for doc in cursor:
+            doc["_id"] = str(doc["_id"])
+            if isinstance(doc.get("created_at"), datetime):
+                doc["created_at"] = doc["created_at"].isoformat()
+            runs.append(doc)
+        return {"count": len(runs), "runs": runs}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,0 +1,13 @@
+mongo cluster
+
+Username : medbook
+password: medbook.123!
+mongodb+srv://medbook:medbook.123!@cluster0.lrttbhf.mongodb.net/medbook?appName=Cluster0
+
+backend URI: https://medbook-api-cd0c.onrender.com
+
+
+Medbook app Admin Login:
+
+username: yessinzouari53@gmail.com
+password: u7N4YDHxTch2PSC

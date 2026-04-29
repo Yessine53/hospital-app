@@ -3,7 +3,12 @@ import { Activity, Brain, RefreshCw, CheckCircle, BarChart3, Zap } from 'lucide-
 import toast from 'react-hot-toast';
 import axios from 'axios';
 
-interface ModelInfo { model_loaded:boolean; metadata:any; features_used:string[]; }
+interface ModelInfo {
+  model_loaded: boolean;
+  metadata: any;
+  feature_importances?: Record<string, number>;
+  features_used: string[];
+}
 interface TrainResult { message:string; accuracy:number; auc_score:number; feature_importances:Record<string,number>; }
 const ML_URL = import.meta.env.VITE_ML_URL || 'http://localhost:8000';
 const featureLabels:Record<string,string>={no_show_rate:'Previous no-show rate',no_show_count:'No-show count',lead_time_days:'Days booked in advance',total_appointments:'Total past appointments',attended_count:'Attended count',cancelled_count:'Cancelled count',age:'Patient age',hour_of_day:'Hour of appointment',day_of_week:'Day of week',is_morning:'Morning appointment',is_monday:'Monday',is_friday:'Friday',gender:'Gender',appointment_type:'Appointment type',is_new_patient:'New patient'};
@@ -22,7 +27,9 @@ const AnalyticsPage: React.FC = () => {
   if(loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600"/></div>;
 
   const m=info?.metadata||{};
-  const feats=result?.feature_importances||{};
+  // Prefer the freshly-trained result if present, otherwise fall back to whatever
+  // /model/info returned (which is the persisted latest run from MongoDB).
+  const feats=result?.feature_importances || info?.feature_importances || {};
   const sorted=Object.entries(feats).sort((a,b)=>b[1]-a[1]);
   const maxI=sorted.length>0?sorted[0][1]:1;
 
