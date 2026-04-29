@@ -26,7 +26,7 @@ A full-stack healthcare appointment management platform with predictive no-show 
 
 https://hospital-app-self-theta.vercel.app
 
-- Website is hosted in free tier machines. So please expect laoding latency
+- Website is hosted in free tier machines. So please expect loading latency
 
 ## Git hub 
 
