@@ -7,7 +7,13 @@ import Appointment, { AppointmentStatus, AppointmentType } from '../models/Appoi
 
 dotenv.config();
 
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://admin:hospital_secure_2024@localhost:27017/hospital_db?authSource=admin';
+const _MONGODB_URI = process.env.MONGODB_URI;
+if (!_MONGODB_URI) {
+  console.error('FATAL: MONGODB_URI environment variable is not set.');
+  console.error('Set it in backend/.env (see backend/.env.example) before running this script.');
+  process.exit(1);
+}
+const MONGODB_URI: string = _MONGODB_URI as string;
 
 async function seed() {
   await mongoose.connect(MONGODB_URI);
