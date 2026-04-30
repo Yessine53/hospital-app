@@ -35,7 +35,16 @@ model = None
 model_metadata = {}
 model_feature_importances = {}  # cached so /model/info can return them after restart
 
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://admin:hospital_secure_2024@localhost:27017/hospital_db?authSource=admin")
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    # Fail loudly at startup rather than silently using a hardcoded fallback
+    # with a known password. Docker/Render logs will show this clearly.
+    raise RuntimeError(
+        "MONGODB_URI environment variable is not set. "
+        "Set it in your .env file (local), docker-compose.yml (containers), "
+        "or the Render dashboard (production)."
+    )
+
 # Kept for backwards compat / local dev only — production persistence is in MongoDB.
 MODEL_PATH = os.getenv("MODEL_PATH", "models/noshow_model.pkl")
 

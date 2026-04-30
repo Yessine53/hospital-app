@@ -1,5 +1,19 @@
 {
-  "dependencies": {
-    "pip": "^0.0.1"
+  "name": "hospital-app",
+  "version": "1.0.0",
+  "description": "Healthcare Appointment Management System with Predictive Analytics — monorepo root",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "build:backend": "npm --prefix backend run build",
+    "build:frontend": "npm --prefix frontend run build",
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   }
 }

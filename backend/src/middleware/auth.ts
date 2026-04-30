@@ -4,6 +4,22 @@ import User, { IUser, UserRole } from '../models/User';
 import { hasPermission, Permission } from '../config/permissions';
 import { logger } from '../utils/logger';
 
+// ---------------------------------------------------------------------------
+// JWT secret is read once at module load. If it is missing the process must
+// refuse to start — a missing secret in production would silently fall back
+// to a known string and let anyone forge admin tokens.
+// ---------------------------------------------------------------------------
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  // We log first so the reason is visible in container logs, then exit.
+  logger.error('FATAL: JWT_SECRET environment variable is not set. Refusing to start.');
+  // process.exit instead of throw so the failure is unambiguous in PM2/Docker logs.
+  process.exit(1);
+}
+// After the guard above, JWT_SECRET is definitely a string. The cast satisfies
+// TypeScript's narrowing, which doesn't follow process.exit branches.
+const SECRET: string = JWT_SECRET as string;
+
 export interface AuthRequest extends Request {
   user?: IUser;
 }
@@ -21,10 +37,7 @@ export const authenticate = async (
       return;
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET || 'fallback-secret'
-    ) as { userId: string; role: string };
+    const decoded = jwt.verify(token, SECRET) as { userId: string; role: string };
 
     const user = await User.findById(decoded.userId);
 

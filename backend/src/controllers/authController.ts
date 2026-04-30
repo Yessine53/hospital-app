@@ -5,18 +5,40 @@ import Patient from '../models/Patient';
 import { AuthRequest } from '../middleware/auth';
 import { logger } from '../utils/logger';
 
+// ---------------------------------------------------------------------------
+// Same rule as in auth.ts: refuse to start without a JWT secret. This file
+// reads it independently so the controller can be imported in isolation
+// (e.g. for unit tests) without depending on the middleware module.
+// ---------------------------------------------------------------------------
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  logger.error('FATAL: JWT_SECRET environment variable is not set. Refusing to start.');
+  process.exit(1);
+}
+const SECRET: jwt.Secret = JWT_SECRET as string;
+
 const generateToken = (userId: string, role: string): string => {
-  const secret: jwt.Secret = process.env.JWT_SECRET || 'fallback-secret';
   return jwt.sign(
     { userId, role },
-    secret,
+    SECRET,
     { expiresIn: 7 * 24 * 60 * 60 } // 7 days in seconds
   );
 };
 
+// Tiny helper — keeps email validation predictable and out of the request handlers.
+const isValidEmail = (email: string): boolean =>
+  typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
 export const login = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body ?? {};
+
+    // Reject malformed input early so we don't burn a DB roundtrip on garbage.
+    if (!isValidEmail(email) || typeof password !== 'string' || password.length === 0) {
+      res.status(400).json({ message: 'Email and password are required' });
+      return;
+    }
+
     const user = await User.findOne({ email }).select('+password');
 
     if (!user || !user.isActive) {
@@ -53,7 +75,26 @@ export const register = async (req: Request, res: Response): Promise<void> => {
     const {
       email, password, firstName, lastName, phone,
       dateOfBirth, gender, address, communicationPreference,
-    } = req.body;
+    } = req.body ?? {};
+
+    // Required-field validation. Mongoose would catch most of these at save
+    // time, but returning a clear 400 is friendlier and avoids ambiguous 500s.
+    if (!isValidEmail(email)) {
+      res.status(400).json({ message: 'A valid email is required' });
+      return;
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      res.status(400).json({ message: 'Password must be at least 8 characters' });
+      return;
+    }
+    if (!firstName || !lastName) {
+      res.status(400).json({ message: 'First name and last name are required' });
+      return;
+    }
+    if (!dateOfBirth || !gender) {
+      res.status(400).json({ message: 'Date of birth and gender are required' });
+      return;
+    }
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -61,6 +102,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // Public registration is always PATIENT — staff roles are created via
+    // the admin-only /api/users endpoint. Never trust a client-supplied role.
     const user = await User.create({
       email,
       password,
@@ -145,7 +188,17 @@ export const updateProfile = async (req: AuthRequest, res: Response): Promise<vo
 
 export const changePassword = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { currentPassword, newPassword } = req.body;
+    const { currentPassword, newPassword } = req.body ?? {};
+
+    if (typeof currentPassword !== 'string' || typeof newPassword !== 'string') {
+      res.status(400).json({ message: 'Current and new password are required' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      res.status(400).json({ message: 'New password must be at least 8 characters' });
+      return;
+    }
+
     const user = await User.findById(req.user!._id).select('+password');
 
     if (!user) {
