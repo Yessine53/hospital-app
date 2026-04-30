@@ -3,6 +3,7 @@ import { patientApi } from '../services/api';
 import { Users, Search, Plus, ChevronLeft, ChevronRight, X, Check } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Patient, Pagination } from '../types';
+import { usePermission } from '../hooks/usePermission';
 
 interface PatientForm {
   email: string; password: string; firstName: string; lastName: string;
@@ -20,6 +21,9 @@ const emptyForm: PatientForm = {
 };
 
 const PatientsPage: React.FC = () => {
+  const { can } = usePermission();
+  const canWrite = can('patients:write');
+
   const [patients, setPatients] = useState<Patient[]>([]);
   const [pagination, setPagination] = useState<Pagination>({ page: 1, limit: 20, total: 0, pages: 0 });
   const [search, setSearch] = useState('');
@@ -81,7 +85,9 @@ const PatientsPage: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900">Patients</h1>
           <p className="text-sm text-gray-500">{pagination.total} registered patients</p>
         </div>
-        <button onClick={openAddModal} className="btn-primary gap-2"><Plus size={16} /> Add Patient</button>
+        {canWrite && (
+          <button onClick={openAddModal} className="btn-primary gap-2"><Plus size={16} /> Add Patient</button>
+        )}
       </div>
 
       {/* Search */}
