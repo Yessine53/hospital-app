@@ -19,6 +19,7 @@ import walkInRoutes from './routes/walkIn';
 import reportRoutes from './routes/reports';
 
 import settingsRoutes from './routes/settings';
+import notificationRoutes from './routes/notifications';
 import { initializeSettings } from './controllers/settingsController';
 
 dotenv.config();
@@ -103,6 +104,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/walk-in', walkInRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -92,4 +92,11 @@ export const reportApi = {
   reminders: (params?: any) => api.get('/reports/reminders', { params }),
 };
 
+// Notifications — role-aware feed computed live by the backend.
+// The frontend tracks dismissed IDs in localStorage so the user can
+// "mark as read" without us needing a notifications collection.
+export const notificationApi = {
+  list: () => api.get('/notifications'),
+};
+
 export default api;
