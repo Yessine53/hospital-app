@@ -26,6 +26,13 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Render (and most reverse-proxy hosts) terminate TLS at the load balancer
+// and forward the real client IP via X-Forwarded-For. Without this, Express
+// reports req.ip as the proxy's IP — meaning every user appears to share
+// the same IP and rate limits get hit immediately.
+// trust proxy = 1 means "trust the FIRST hop" (Render's edge proxy).
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({
@@ -33,13 +40,50 @@ app.use(cors({
   credentials: true,
 }));
 
+// ---------------------------------------------------------------------------
 // Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
-  message: 'Too many requests, please try again later',
+// ---------------------------------------------------------------------------
+// Two-tier strategy:
+//
+//   1. Global limiter — generous (1000/15min) so a real interactive session
+//      with dashboards, polling, and navigation never gets 429'd. The old
+//      limit of 100/15min was being hit just by browsing the dashboard for
+//      a few minutes.
+//
+//   2. Auth limiter — strict (10/15min) on /api/auth/login and
+//      /api/auth/register only, because those are the actually attackable
+//      endpoints (credential stuffing, account-creation abuse).
+//
+// Both return JSON so the frontend can display the error nicely instead of
+// receiving plain text and falling back to "unknown error".
+// ---------------------------------------------------------------------------
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 1000,
+  standardHeaders: true,   // RateLimit-* headers (the modern spec)
+  legacyHeaders: false,    // disable deprecated X-RateLimit-* headers
+  message: { message: 'Too many requests. Please slow down and try again in a minute.' },
 });
-app.use('/api/', limiter);
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Don't count successful logins toward the limit — only failed attempts.
+  // This means brute-forcers hit the wall fast but a normal user who logs
+  // in and out a few times during testing isn't punished.
+  skipSuccessfulRequests: true,
+  message: { message: 'Too many authentication attempts. Please wait 15 minutes.' },
+});
+
+// Apply the strict limiter ONLY to login and register (and any other auth
+// write endpoints), not to /api/auth/me etc. which a real session polls.
+app.use('/api/auth/login', authLimiter);
+app.use('/api/auth/register', authLimiter);
+
+// Apply the generous global limiter to everything else under /api/.
+app.use('/api/', globalLimiter);
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));
