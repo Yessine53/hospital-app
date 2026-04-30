@@ -13,12 +13,22 @@ export const getPatients = async (req: AuthRequest, res: Response): Promise<void
 
     let userFilter: any = { role: UserRole.PATIENT, isActive: true };
     if (search) {
-      const searchRegex = new RegExp(search as string, 'i');
-      userFilter.$or = [
-        { firstName: searchRegex },
-        { lastName: searchRegex },
-        { email: searchRegex },
-      ];
+      // Split the query into whitespace-separated tokens. Each token must
+      // match SOMEWHERE — firstName, lastName, or email. Tokens are ANDed
+      // together so "Jon Welch" requires both "Jon" and "Welch" to be
+      // present (in any field), while a single word like "Welch" still
+      // matches as before. Without this, multi-word searches always fail
+      // because the regex /Jon Welch/ never matches firstName="Jon" alone.
+      const tokens = (search as string).trim().split(/\s+/).filter(Boolean);
+      if (tokens.length > 0) {
+        // Escape regex metacharacters so a query like "O'Brien" or "a.b"
+        // doesn't blow up the regex engine.
+        const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        userFilter.$and = tokens.map((t) => {
+          const re = new RegExp(escape(t), 'i');
+          return { $or: [{ firstName: re }, { lastName: re }, { email: re }] };
+        });
+      }
     }
 
     const users = await User.find(userFilter).select('_id');
